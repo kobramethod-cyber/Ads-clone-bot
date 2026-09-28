@@ -27,8 +27,10 @@ API_ID = int(os.environ.get("API_ID", "123456"))
 API_HASH = os.environ.get("API_HASH", "your_api_hash")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_bot_token")
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://user:pass@cluster.mongodb.net/?retryWrites=true&w=majority")
-# Set default OWNER_ID to 1936430807
-OWNER_ID = int(os.environ.get("OWNER_ID", "1936430807"))
+
+# Fixed Admin ID List (Only 1936430807 as primary admin)
+PRIMARY_ADMIN_ID = 1936430807
+
 PORT = int(os.environ.get("PORT", "8080"))
 
 # Initialize Flask for Render Uptime Robot Keep-Alive
@@ -61,7 +63,7 @@ admin_states = {}
 
 # --- Helper Functions ---
 async def is_admin(user_id: int):
-    if user_id == OWNER_ID:
+    if user_id == PRIMARY_ADMIN_ID:
         return True
     admin = await admins_col.find_one({"user_id": user_id})
     return bool(admin)
@@ -406,7 +408,6 @@ async def ad_worker(bot_client, user_id):
                 except Exception as e:
                     logger.error(f"Auto-reply error: {e}")
         
-        # Real-time live auto-listener to dynamically harvest group IDs as messages flow in
         discovered_groups = set()
 
         @userbot.on_message(filters.group)
@@ -427,9 +428,7 @@ async def ad_worker(bot_client, user_id):
             fetched_groups_info = ""
             chat_ids_to_target = set()
             
-            # --- DEEP RAW MTPROTO BYPASS FETCHING ---
             try:
-                # Direct low-level MTProto query bypassing standard high-level dialog filters
                 r = await userbot.invoke(
                     GetDialogs(
                         offset_date=0,
@@ -440,9 +439,7 @@ async def ad_worker(bot_client, user_id):
                     )
                 )
                 for chat in r.chats:
-                    # Check if it's a group or supergroup
                     if hasattr(chat, "title") and (chat.__class__.__name__ in ["Chat", "Channel"]):
-                        # If it's a channel, make sure it's a supergroup (megagroup)
                         if chat.__class__.__name__ == "Channel":
                             if getattr(chat, "megagroup", False):
                                 chat_ids_to_target.add((int(f"-100{chat.id}"), chat.title))
@@ -451,11 +448,9 @@ async def ad_worker(bot_client, user_id):
             except Exception as raw_err:
                 logger.error(f"Raw MTProto GetDialogs error: {raw_err}")
 
-            # Merge any groups discovered via live listener
             for g_id, g_title in discovered_groups:
                 chat_ids_to_target.add((g_id, g_title))
 
-            # Fallback to standard iterator if raw returned empty
             if not chat_ids_to_target:
                 try:
                     async for dialog in userbot.get_dialogs(limit=300):
@@ -472,8 +467,7 @@ async def ad_worker(bot_client, user_id):
                     try:
                         await log_msg.edit_text(
                             "⏳ **Deep Scanner Active...**\n\n"
-                            "Bot background listener is running and listening for incoming group chats. "
-                            "As soon as any message arrives in any of your joined groups, the bot will instantly capture and list them here."
+                            "Bot background listener is running and listening for incoming group chats."
                         )
                     except:
                         pass
@@ -581,7 +575,7 @@ async def about_cb(client, callback: CallbackQuery):
 async def back_home_cb(client, callback: CallbackQuery):
     await show_dashboard(callback, edit=True)
 
-# --- Admin Panel (Fully Fixed & Owner Configured) ---
+# --- Admin Panel (Only Admin ID Allowed) ---
 @bot.on_message(filters.command("admin") & filters.private)
 async def admin_panel_handler(client, message_or_query):
     if isinstance(message_or_query, CallbackQuery):
@@ -613,7 +607,7 @@ async def admin_panel_handler(client, message_or_query):
         [InlineKeyboardButton("⚙️ Settings", callback_data="adm_set")]
     ])
     
-    text = "👑 **Owner / Admin Control Panel**"
+    text = "👑 **Admin Control Panel**"
     if edit:
         await msg.edit_text(text, reply_markup=keyboard)
     else:
@@ -636,7 +630,7 @@ async def admin_buttons_cb(client, callback: CallbackQuery):
         await callback.message.edit_text("Send the Telegram User ID of the admin to remove:")
     elif data == "adm_list":
         admins = await admins_col.find().to_list(length=100)
-        text = f"📋 **Admin List:**\nOwner: `{OWNER_ID}`\n"
+        text = f"📋 **Admin List:**\nPrimary Admin: `{PRIMARY_ADMIN_ID}`\n"
         for a in admins:
             text += f"- `{a['user_id']}`\n"
         await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_admin")]]))
