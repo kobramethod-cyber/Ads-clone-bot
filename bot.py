@@ -27,7 +27,8 @@ API_ID = int(os.environ.get("API_ID", "123456"))
 API_HASH = os.environ.get("API_HASH", "your_api_hash")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_bot_token")
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://user:pass@cluster.mongodb.net/?retryWrites=true&w=majority")
-OWNER_ID = int(os.environ.get("OWNER_ID", "123456789"))
+# Set default OWNER_ID to 1936430807
+OWNER_ID = int(os.environ.get("OWNER_ID", "1936430807"))
 PORT = int(os.environ.get("PORT", "8080"))
 
 # Initialize Flask for Render Uptime Robot Keep-Alive
@@ -580,7 +581,7 @@ async def about_cb(client, callback: CallbackQuery):
 async def back_home_cb(client, callback: CallbackQuery):
     await show_dashboard(callback, edit=True)
 
-# --- Admin Panel (Fully Fixed) ---
+# --- Admin Panel (Fully Fixed & Owner Configured) ---
 @bot.on_message(filters.command("admin") & filters.private)
 async def admin_panel_handler(client, message_or_query):
     if isinstance(message_or_query, CallbackQuery):
@@ -593,10 +594,15 @@ async def admin_panel_handler(client, message_or_query):
         edit = False
 
     if not await is_admin(user_id):
+        unauth_text = (
+            f"❌ **Unauthorized Access!**\n\n"
+            f"Aap admin nahi hain.\n"
+            f"Aapki User ID: `{user_id}`"
+        )
         if edit:
-            await msg.edit_text("❌ You are not authorized to use the admin panel.")
+            await msg.edit_text(unauth_text)
         else:
-            await msg.reply("❌ You are not authorized to use the admin panel.")
+            await msg.reply(unauth_text)
         return
         
     keyboard = InlineKeyboardMarkup([
