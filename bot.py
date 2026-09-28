@@ -12,9 +12,10 @@ import os
 import logging
 from flask import Flask
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery, InputMediaPhoto
 from pyrogram.errors import SessionPasswordNeeded, PhoneCodeInvalid, FloodWait
 from pyrogram.raw.functions.messages import GetDialogs
+from pyrogram.raw.functions.account import UpdateProfile
 from pyrogram.raw.types import InputPeerEmpty
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -33,7 +34,7 @@ PRIMARY_ADMIN_ID = 1936430807
 
 PORT = int(os.environ.get("PORT", "8080"))
 
-# Initialize Flask for Render Uptime Robot Keep-Alive
+# Initialize Flask for Uptime
 app_flask = Flask(__name__)
 
 @app_flask.route('/')
@@ -56,10 +57,21 @@ settings_col = db["settings"]
 forcesub_col = db["forcesub"]
 admins_col = db["admins"]
 
-# Active running tasks dictionary to manage background loops per user
+# Active running tasks dictionary
 active_workers = {}
 temp_sessions = {}
 admin_states = {}
+
+# Default Values
+DEFAULT_DASHBOARD_PIC = "https://telegra.ph/file/0b93892809e072d627c54.jpg"
+DEFAULT_DASHBOARD_TEXT = (
+    "─── **Powered by @adsmanage13_bot** ───\n\n"
+    "• **Hosted Accounts:** `{acc_count}/20`\n"
+    "• **Service:** `{service_status}`\n"
+    "• **Advertisement status:** `{ad_status}`\n"
+    "• **Interval:** `{interval} minutes`\n"
+    "• **Current plan:** `Free`"
+)
 
 # --- Helper Functions ---
 async def is_admin(user_id: int):
@@ -88,6 +100,12 @@ async def check_forcesub(client, user_id):
     except Exception:
         return []
 
+async def get_dashboard_config():
+    config = await settings_col.find_one({"type": "bot_config"})
+    pic = config.get("dashboard_pic", DEFAULT_DASHBOARD_PIC) if config else DEFAULT_DASHBOARD_PIC
+    text_template = config.get("dashboard_text", DEFAULT_DASHBOARD_TEXT) if config else DEFAULT_DASHBOARD_TEXT
+    return pic, text_template
+
 # --- /start Command & Main Dashboard ---
 @bot.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message: Message):
@@ -95,7 +113,7 @@ async def start_handler(client, message: Message):
     
     user_exists = await users_col.find_one({"user_id": user_id})
     if not user_exists:
-        await users_col.insert_one({"user_id": user_id, "joined_date": message.date})
+        await users_col.insert_one({"user_id": user_id, "joined_date": message.date, "bio_set": False})
         
     not_joined = await check_forcesub(client, user_id)
     if not_joined and not await is_admin(user_id):
@@ -121,36 +139,47 @@ async def show_dashboard(message_or_query, edit=False):
     ad_data = await ads_col.find_one({"user_id": user_id})
     settings = await settings_col.find_one({"user_id": user_id}) or {"interval": 5, "ad_status": "Stopped ⛔", "auto_reply": False}
     
-    service_status = "Set ✅" if ad_data else "Not Set ❌"
+    service_status = "Set ✅" if ad_data else "Not set ❌"
     ad_status = settings.get("ad_status", "Stopped ⛔")
     interval = settings.get("interval", 5)
+    
+    dash_pic, text_template = await get_dashboard_config()
 
-    text = (
-        "**Welcome to Ads Manager Bot**\n\n"
-        f"Hosted Accounts: `{acc_count}/20`\n"
-        f"Service: `{service_status}`\n"
-        f"Advertisement Status: `{ad_status}`\n"
-        f"Interval: `{interval} Minutes`"
-    )
+    try:
+        text = text_template.format(
+            acc_count=acc_count,
+            service_status=service_status,
+            ad_status=ad_status,
+            interval=interval
+        )
+    except Exception:
+        text = text_template
 
-    # Basic Dashboard Buttons
     btn_layout = [
         [InlineKeyboardButton("👤 Manage Accounts", callback_data="manage_accounts"), InlineKeyboardButton("📢 Set Advertisement", callback_data="set_ad")],
         [InlineKeyboardButton("⏰ Interval & Delay", callback_data="set_interval"), InlineKeyboardButton("▶️ Run Ads", callback_data="run_ads")],
         [InlineKeyboardButton("⏹ Stop Ads", callback_data="stop_ads"), InlineKeyboardButton("🤖 Auto Reply", callback_data="auto_reply")],
-        [InlineKeyboardButton("ℹ️ About", callback_data="about_bot")]
+        [InlineKeyboardButton("ℹ️ About Bot", callback_data="about_bot")]
     ]
 
-    # Admin Check: Agar Admin hai to extra Button add hoga
     if await is_admin(user_id):
         btn_layout.append([InlineKeyboardButton("👑 Admin Panel", callback_data="open_admin_panel")])
 
     keyboard = InlineKeyboardMarkup(btn_layout)
 
     if edit:
-        await msg.edit_text(text, reply_markup=keyboard)
+        try:
+            await msg.edit_media(
+                media=InputMediaPhoto(media=dash_pic, caption=text),
+                reply_markup=keyboard
+            )
+        except Exception:
+            await msg.edit_text(text, reply_markup=keyboard)
     else:
-        await msg.reply(text, reply_markup=keyboard)
+        try:
+            await msg.reply_photo(photo=dash_pic, caption=text, reply_markup=keyboard)
+        except Exception:
+            await msg.reply(text, reply_markup=keyboard)
 
 @bot.on_callback_query(filters.regex("check_forcesub"))
 async def check_forcesub_cb(client, callback: CallbackQuery):
@@ -172,7 +201,7 @@ async def manage_accounts_cb(client, callback: CallbackQuery):
             [InlineKeyboardButton("➕ Add Account", callback_data="add_account")],
             [InlineKeyboardButton("🔙 Back", callback_data="back_home")]
         ])
-        await callback.message.edit_text("📋 **Your Accounts:**\n\nYou haven't added any Telegram accounts yet.", reply_markup=keyboard)
+        await callback.message.edit_caption(caption="📋 **Your Accounts:**\n\nYou haven't added any Telegram accounts yet.", reply_markup=keyboard)
         return
 
     keyboard_buttons = []
@@ -182,7 +211,7 @@ async def manage_accounts_cb(client, callback: CallbackQuery):
     keyboard_buttons.append([InlineKeyboardButton("➕ Add Another Account", callback_data="add_account")])
     keyboard_buttons.append([InlineKeyboardButton("🔙 Back", callback_data="back_home")])
     
-    await callback.message.edit_text("📋 **Your Hosted Accounts:**\nClick on any account below to remove it:", reply_markup=InlineKeyboardMarkup(keyboard_buttons))
+    await callback.message.edit_caption(caption="📋 **Your Hosted Accounts:**\nClick on any account below to remove it:", reply_markup=InlineKeyboardMarkup(keyboard_buttons))
 
 @bot.on_callback_query(filters.regex(r"^rem_acc_"))
 async def remove_account_cb(client, callback: CallbackQuery):
@@ -207,10 +236,10 @@ async def add_account_cb(client, callback: CallbackQuery):
         await callback.answer("⚠️ Maximum account limit (20) reached!", show_alert=True)
         return
     temp_sessions[user_id] = {"step": "waiting_phone"}
-    await callback.message.edit_text("Send your phone number with country code.\nExample: `+919876543210`")
+    await callback.message.reply("Send your phone number with country code.\nExample: `+919876543210`")
 
 # Unified Text Message Router
-@bot.on_message(filters.private & filters.text)
+@bot.on_message(filters.private & (filters.text | filters.photo))
 async def unified_text_handler(client, message: Message):
     user_id = message.from_user.id
     
@@ -218,13 +247,37 @@ async def unified_text_handler(client, message: Message):
         state = admin_states[user_id]
         del admin_states[user_id]
         
-        if state == "wait_add_admin":
+        if state == "wait_dash_pic":
+            pic_media = None
+            if message.photo:
+                pic_media = message.photo.file_id
+            elif message.text:
+                pic_media = message.text.strip()
+            
+            if pic_media:
+                await settings_col.update_one({"type": "bot_config"}, {"$set": {"dashboard_pic": pic_media}}, upsert=True)
+                await message.reply("✅ **Dashboard Photo Updated Successfully!**")
+            else:
+                await message.reply("❌ Invalid input! Send a photo or an image URL.")
+            return
+
+        elif state == "wait_dash_text":
+            new_text = message.text
+            if new_text:
+                await settings_col.update_one({"type": "bot_config"}, {"$set": {"dashboard_text": new_text}}, upsert=True)
+                await message.reply("✅ **Dashboard Text Updated Successfully!**")
+            else:
+                await message.reply("❌ Text cannot be empty.")
+            return
+
+        elif state == "wait_add_admin":
             try:
                 new_admin_id = int(message.text.strip())
                 await admins_col.update_one({"user_id": new_admin_id}, {"$set": {"user_id": new_admin_id}}, upsert=True)
                 await message.reply("✅ Admin added successfully!")
             except Exception as e:
                 await message.reply(f"❌ Error: {e}")
+            return
         elif state == "wait_rem_admin":
             try:
                 rem_id = int(message.text.strip())
@@ -232,14 +285,17 @@ async def unified_text_handler(client, message: Message):
                 await message.reply("✅ Admin removed successfully!")
             except Exception as e:
                 await message.reply(f"❌ Error: {e}")
+            return
         elif state == "wait_add_fsub":
             ch = message.text.strip()
             await forcesub_col.update_one({"channel": ch}, {"$set": {"channel": ch}}, upsert=True)
             await message.reply("✅ Force Sub channel added successfully!")
+            return
         elif state == "wait_rem_fsub":
             ch = message.text.strip()
             await forcesub_col.delete_one({"channel": ch})
             await message.reply("✅ Force Sub channel removed successfully!")
+            return
         elif state == "wait_broadcast":
             bc_text = message.text
             users = await users_col.find().to_list(length=50000)
@@ -253,7 +309,7 @@ async def unified_text_handler(client, message: Message):
                 except:
                     failed += 1
             await status_msg.edit_text(f"✅ **Broadcast Completed!**\n\nSuccess: `{success}`\nFailed: `{failed}`")
-        return
+            return
 
     if user_id not in temp_sessions:
         return
@@ -330,7 +386,7 @@ async def unified_text_handler(client, message: Message):
 async def set_ad_cb(client, callback: CallbackQuery):
     user_id = callback.from_user.id
     temp_sessions[user_id] = {"step": "waiting_ad_text"}
-    await callback.message.edit_text("Send advertisement text:")
+    await callback.message.reply("Send advertisement text:")
 
 # --- Interval & Delay ---
 @bot.on_callback_query(filters.regex("set_interval"))
@@ -341,7 +397,7 @@ async def set_interval_cb(client, callback: CallbackQuery):
         [InlineKeyboardButton("30 Minutes", callback_data="int_30")],
         [InlineKeyboardButton("🔙 Back", callback_data="back_home")]
     ])
-    await callback.message.edit_text("Select Advertisement Interval:", reply_markup=keyboard)
+    await callback.message.edit_caption(caption="Select Advertisement Interval:", reply_markup=keyboard)
 
 @bot.on_callback_query(filters.regex(r"^int_"))
 async def save_interval_cb(client, callback: CallbackQuery):
@@ -359,7 +415,7 @@ async def auto_reply_menu(client, callback: CallbackQuery):
         [InlineKeyboardButton("Edit Message 📝", callback_data="ar_edit")],
         [InlineKeyboardButton("🔙 Back", callback_data="back_home")]
     ])
-    await callback.message.edit_text("🤖 **Auto Reply Settings**\nConfigure automated response for incoming direct messages on your userbots.", reply_markup=keyboard)
+    await callback.message.edit_caption(caption="🤖 **Auto Reply Settings**\nConfigure automated response for incoming direct messages on your userbots.", reply_markup=keyboard)
 
 @bot.on_callback_query(filters.regex("ar_enable"))
 async def ar_enable_cb(client, callback: CallbackQuery):
@@ -376,7 +432,7 @@ async def ar_disable_cb(client, callback: CallbackQuery):
 @bot.on_callback_query(filters.regex("ar_edit"))
 async def ar_edit_cb(client, callback: CallbackQuery):
     temp_sessions[callback.from_user.id] = {"step": "waiting_autoreply_text"}
-    await callback.message.edit_text("Send your auto-reply message text:")
+    await callback.message.reply("Send your auto-reply message text:")
 
 # --- Run & Stop Ads Worker ---
 async def ad_worker(bot_client, user_id):
@@ -394,6 +450,15 @@ async def ad_worker(bot_client, user_id):
             
         userbot = Client(f"worker_{user_id}", session_string=account["session_string"], api_id=API_ID, api_hash=API_HASH, in_memory=True)
         await userbot.start()
+
+        # Update Bio once
+        user_db_data = await users_col.find_one({"user_id": user_id})
+        if user_db_data and not user_db_data.get("bio_set", False):
+            try:
+                await userbot.invoke(UpdateProfile(about="Free Auto ads via @adsmanage13_bot"))
+                await users_col.update_one({"user_id": user_id}, {"$set": {"bio_set": True}})
+            except Exception as bio_err:
+                logger.error(f"Bio set error: {bio_err}")
 
         discovered_groups = set()
 
@@ -508,13 +573,13 @@ async def stop_ads_cb(client, callback: CallbackQuery):
 
 @bot.on_callback_query(filters.regex("about_bot"))
 async def about_cb(client, callback: CallbackQuery):
-    await callback.message.edit_text("ℹ️ **Ads Manager Bot**\nPowered by Pyrogram.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_home")]]))
+    await callback.message.edit_caption(caption="ℹ️ **Ads Manager Bot**\nPowered by Pyrogram.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_home")]]))
 
 @bot.on_callback_query(filters.regex("back_home"))
 async def back_home_cb(client, callback: CallbackQuery):
     await show_dashboard(callback, edit=True)
 
-# --- Admin Panel Buttons Callback ---
+# --- Admin Panel ---
 @bot.on_callback_query(filters.regex("^open_admin_panel$"))
 async def open_admin_panel_cb(client, callback: CallbackQuery):
     if not await is_admin(callback.from_user.id):
@@ -522,13 +587,14 @@ async def open_admin_panel_cb(client, callback: CallbackQuery):
         return
 
     keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🖼 Set Photo", callback_data="adm_set_pic"), InlineKeyboardButton("📝 Edit Text", callback_data="adm_set_text")],
         [InlineKeyboardButton("👑 Add Admin", callback_data="adm_add"), InlineKeyboardButton("❌ Remove Admin", callback_data="adm_rem")],
         [InlineKeyboardButton("📋 Admin List", callback_data="adm_list"), InlineKeyboardButton("🔒 Add Force Sub", callback_data="fsub_add")],
         [InlineKeyboardButton("🔓 Remove Force Sub", callback_data="fsub_rem"), InlineKeyboardButton("📋 Force Sub List", callback_data="fsub_list")],
         [InlineKeyboardButton("📢 Broadcast", callback_data="adm_bc"), InlineKeyboardButton("📊 Statistics", callback_data="adm_stats")],
         [InlineKeyboardButton("🔙 Back to Dashboard", callback_data="back_home")]
     ])
-    await callback.message.edit_text("👑 **Admin Control Panel**", reply_markup=keyboard)
+    await callback.message.edit_caption(caption="👑 **Admin Control Panel**", reply_markup=keyboard)
 
 @bot.on_callback_query(filters.regex(r"^(adm_|fsub_|back_admin)"))
 async def admin_buttons_cb(client, callback: CallbackQuery):
@@ -539,38 +605,52 @@ async def admin_buttons_cb(client, callback: CallbackQuery):
     data = callback.data
     user_id = callback.from_user.id
     
-    if data == "adm_add":
+    if data == "adm_set_pic":
+        admin_states[user_id] = "wait_dash_pic"
+        await callback.message.reply("Send photo OR direct photo URL to set as dashboard image:")
+    elif data == "adm_set_text":
+        admin_states[user_id] = "wait_dash_text"
+        instruction = (
+            "Send the new text for Dashboard.\n\n"
+            "You can use these placeholders to insert dynamic stats:\n"
+            "• `{acc_count}` - Number of hosted accounts\n"
+            "• `{service_status}` - Status of ad (Set/Not set)\n"
+            "• `{ad_status}` - Ad running status\n"
+            "• `{interval}` - Interval in minutes"
+        )
+        await callback.message.reply(instruction)
+    elif data == "adm_add":
         admin_states[user_id] = "wait_add_admin"
-        await callback.message.edit_text("Send the Telegram User ID of the new admin:")
+        await callback.message.reply("Send the Telegram User ID of the new admin:")
     elif data == "adm_rem":
         admin_states[user_id] = "wait_rem_admin"
-        await callback.message.edit_text("Send the Telegram User ID of the admin to remove:")
+        await callback.message.reply("Send the Telegram User ID of the admin to remove:")
     elif data == "adm_list":
         admins = await admins_col.find().to_list(length=100)
         text = f"📋 **Admin List:**\nPrimary Admin: `{PRIMARY_ADMIN_ID}`\n"
         for a in admins:
             text += f"- `{a['user_id']}`\n"
-        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="open_admin_panel")]]))
+        await callback.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="open_admin_panel")]]))
     elif data == "fsub_add":
         admin_states[user_id] = "wait_add_fsub"
-        await callback.message.edit_text("Send channel username or private ID (`@channel` or `-100xxx`):")
+        await callback.message.reply("Send channel username or private ID (`@channel` or `-100xxx`):")
     elif data == "fsub_rem":
         admin_states[user_id] = "wait_rem_fsub"
-        await callback.message.edit_text("Send channel username or ID to remove:")
+        await callback.message.reply("Send channel username or ID to remove:")
     elif data == "fsub_list":
         subs = await forcesub_col.find().to_list(length=100)
         text = "📋 **Force Sub Channels:**\n"
         for s in subs:
             text += f"- `{s['channel']}`\n"
-        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="open_admin_panel")]]))
+        await callback.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="open_admin_panel")]]))
     elif data == "adm_bc":
         admin_states[user_id] = "wait_broadcast"
-        await callback.message.edit_text("Send the broadcast message:")
+        await callback.message.reply("Send the broadcast message:")
     elif data == "adm_stats":
         total_users = await users_col.count_documents({})
         total_accs = await accounts_col.count_documents({})
         text = f"📊 **Bot Statistics:**\n\nTotal Users: `{total_users}`\nHosted Accounts: `{total_accs}`"
-        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="open_admin_panel")]]))
+        await callback.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="open_admin_panel")]]))
 
 # --- Main Entry Point ---
 if __name__ == "__main__":
