@@ -28,7 +28,7 @@ API_HASH = os.environ.get("API_HASH", "your_api_hash")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_bot_token")
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://user:pass@cluster.mongodb.net/?retryWrites=true&w=majority")
 
-# Fixed Admin ID List (Only 1936430807 as primary admin)
+# Fixed Admin ID (1936430807)
 PRIMARY_ADMIN_ID = 1936430807
 
 PORT = int(os.environ.get("PORT", "8080"))
@@ -133,12 +133,19 @@ async def show_dashboard(message_or_query, edit=False):
         f"Interval: `{interval} Minutes`"
     )
 
-    keyboard = InlineKeyboardMarkup([
+    # Basic Dashboard Buttons
+    btn_layout = [
         [InlineKeyboardButton("👤 Manage Accounts", callback_data="manage_accounts"), InlineKeyboardButton("📢 Set Advertisement", callback_data="set_ad")],
         [InlineKeyboardButton("⏰ Interval & Delay", callback_data="set_interval"), InlineKeyboardButton("▶️ Run Ads", callback_data="run_ads")],
         [InlineKeyboardButton("⏹ Stop Ads", callback_data="stop_ads"), InlineKeyboardButton("🤖 Auto Reply", callback_data="auto_reply")],
         [InlineKeyboardButton("ℹ️ About", callback_data="about_bot")]
-    ])
+    ]
+
+    # Admin Check: Agar Admin hai to extra Button add hoga
+    if await is_admin(user_id):
+        btn_layout.append([InlineKeyboardButton("👑 Admin Panel", callback_data="open_admin_panel")])
+
+    keyboard = InlineKeyboardMarkup(btn_layout)
 
     if edit:
         await msg.edit_text(text, reply_markup=keyboard)
@@ -202,7 +209,7 @@ async def add_account_cb(client, callback: CallbackQuery):
     temp_sessions[user_id] = {"step": "waiting_phone"}
     await callback.message.edit_text("Send your phone number with country code.\nExample: `+919876543210`")
 
-# Unified Text Message Router for User States & Admin States
+# Unified Text Message Router
 @bot.on_message(filters.private & filters.text)
 async def unified_text_handler(client, message: Message):
     user_id = message.from_user.id
@@ -371,43 +378,23 @@ async def ar_edit_cb(client, callback: CallbackQuery):
     temp_sessions[callback.from_user.id] = {"step": "waiting_autoreply_text"}
     await callback.message.edit_text("Send your auto-reply message text:")
 
-# --- Run & Stop Ads Worker with Raw MTProto Deep-Level Extraction ---
+# --- Run & Stop Ads Worker ---
 async def ad_worker(bot_client, user_id):
     log_msg = None
     try:
         logger.info(f"Ad worker started for user {user_id}")
-        
-        log_msg = await bot_client.send_message(
-            user_id, 
-            "🚀 **Ad Worker Initialized!**\nConnecting userbot and running deep raw MTProto group scanner..."
-        )
-        
+        log_msg = await bot_client.send_message(user_id, "🚀 **Ad Worker Initialized!**")
         account = await accounts_col.find_one({"user_id": user_id})
         ad = await ads_col.find_one({"user_id": user_id})
         
         if not account or not ad:
-            logger.warning(f"Ad worker for {user_id}: Account or Ad text missing!")
             if log_msg:
-                await log_msg.edit_text("❌ **Error:** Account or Advertisement text is missing!")
+                await log_msg.edit_text("❌ **Error:** Account or Advertisement text missing!")
             return
             
         userbot = Client(f"worker_{user_id}", session_string=account["session_string"], api_id=API_ID, api_hash=API_HASH, in_memory=True)
         await userbot.start()
-        logger.info(f"Userbot session started successfully for user {user_id}")
-        
-        if log_msg:
-            await log_msg.edit_text("✅ **Userbot Connected!**\nExtracting chats via Raw Protocol...")
 
-        @userbot.on_message(filters.private & ~filters.me)
-        async def handle_auto_reply(client, message):
-            s = await settings_col.find_one({"user_id": user_id})
-            if s and s.get("auto_reply") and s.get("auto_reply_text"):
-                try:
-                    await message.reply(s["auto_reply_text"])
-                    logger.info(f"Auto-reply sent to user {message.from_user.id}")
-                except Exception as e:
-                    logger.error(f"Auto-reply error: {e}")
-        
         discovered_groups = set()
 
         @userbot.on_message(filters.group)
@@ -418,26 +405,16 @@ async def ad_worker(bot_client, user_id):
         while True:
             settings = await settings_col.find_one({"user_id": user_id})
             if not settings or settings.get("ad_status") != "Running 🚀":
-                logger.info(f"Ad worker for {user_id} stopped via status check.")
                 if log_msg:
                     await log_msg.edit_text("⛔ **Ad Campaign Stopped.**")
                 break
                 
-            sent_count = 0
-            failed_count = 0
+            sent_count, failed_count = 0, 0
             fetched_groups_info = ""
             chat_ids_to_target = set()
             
             try:
-                r = await userbot.invoke(
-                    GetDialogs(
-                        offset_date=0,
-                        offset_id=0,
-                        offset_peer=InputPeerEmpty(),
-                        limit=500,
-                        hash=0
-                    )
-                )
+                r = await userbot.invoke(GetDialogs(offset_date=0, offset_id=0, offset_peer=InputPeerEmpty(), limit=500, hash=0))
                 for chat in r.chats:
                     if hasattr(chat, "title") and (chat.__class__.__name__ in ["Chat", "Channel"]):
                         if chat.__class__.__name__ == "Channel":
@@ -446,31 +423,16 @@ async def ad_worker(bot_client, user_id):
                         else:
                             chat_ids_to_target.add((int(f"-{chat.id}"), chat.title))
             except Exception as raw_err:
-                logger.error(f"Raw MTProto GetDialogs error: {raw_err}")
+                logger.error(f"Raw MTProto error: {raw_err}")
 
             for g_id, g_title in discovered_groups:
                 chat_ids_to_target.add((g_id, g_title))
 
-            if not chat_ids_to_target:
-                try:
-                    async for dialog in userbot.get_dialogs(limit=300):
-                        if dialog.chat and dialog.chat.type in ["group", "supergroup"]:
-                            chat_ids_to_target.add((dialog.chat.id, dialog.chat.title or "Unnamed Group"))
-                except:
-                    pass
-
             dialog_count = len(chat_ids_to_target)
-            logger.info(f"Deep scan complete. Target groups found: {dialog_count}")
 
             if dialog_count == 0:
                 if log_msg:
-                    try:
-                        await log_msg.edit_text(
-                            "⏳ **Deep Scanner Active...**\n\n"
-                            "Bot background listener is running and listening for incoming group chats."
-                        )
-                    except:
-                        pass
+                    await log_msg.edit_text("⏳ **Listening for active group chats...**")
                 await asyncio.sleep(20)
                 continue
 
@@ -478,27 +440,19 @@ async def ad_worker(bot_client, user_id):
                 try:
                     await userbot.send_message(chat_id, ad["text"])
                     sent_count += 1
-                    logger.info(f"Successfully sent ad to group: {chat_title} ({chat_id})")
                     fetched_groups_info += f"\n• {chat_title} ➔ Sent ✅"
                     await asyncio.sleep(3)
                 except FloodWait as fw:
-                    logger.warning(f"FloodWait hit! Sleeping for {fw.value} seconds.")
-                    if log_msg:
-                        try:
-                            await log_msg.edit_text(f"⏳ **FloodWait Notice:** Sleeping for {fw.value}s...")
-                        except:
-                            pass
                     await asyncio.sleep(fw.value)
                     try:
                         await userbot.send_message(chat_id, ad["text"])
                         sent_count += 1
-                        fetched_groups_info += f"\n• {chat_title} ➔ Sent (After Wait) ✅"
-                    except Exception as e:
+                        fetched_groups_info += f"\n• {chat_title} ➔ Sent ✅"
+                    except:
                         failed_count += 1
                         fetched_groups_info += f"\n• {chat_title} ➔ Failed ❌"
-                except Exception as e:
+                except Exception:
                     failed_count += 1
-                    logger.error(f"Could not send ad to group {chat_title} ({chat_id}): {e}")
                     fetched_groups_info += f"\n• {chat_title} ➔ Failed ❌"
             
             summary_text = (
@@ -513,26 +467,15 @@ async def ad_worker(bot_client, user_id):
             if log_msg:
                 try:
                     await log_msg.edit_text(summary_text)
-                except Exception as ex:
-                    logger.error(f"Failed to update log message: {ex}")
-            
-            interval_mins = settings.get("interval", 5)
-            if log_msg:
-                try:
-                    await bot_client.send_message(user_id, f"💤 Cycle completed. Next round in `{interval_mins}` minutes.")
-                except:
+                except Exception:
                     pass
             
+            interval_mins = settings.get("interval", 5)
             await asyncio.sleep(interval_mins * 60)
             
         await userbot.stop()
     except Exception as e:
-        logger.error(f"Critical Worker error for user {user_id}: {e}", exc_info=True)
-        if log_msg:
-            try:
-                await log_msg.edit_text(f"❌ **Critical Worker Error:** `{str(e)}`")
-            except:
-                pass
+        logger.error(f"Worker Error: {e}")
 
 @bot.on_callback_query(filters.regex("run_ads"))
 async def run_ads_cb(client, callback: CallbackQuery):
@@ -541,77 +484,51 @@ async def run_ads_cb(client, callback: CallbackQuery):
     acc = await accounts_col.find_one({"user_id": user_id})
     
     if not ad or not acc:
-        await callback.answer("⚠️ Please set advertisement and add at least one account first!", show_alert=True)
+        await callback.answer("⚠️ Set ad & account first!", show_alert=True)
         return
         
     await settings_col.update_one({"user_id": user_id}, {"$set": {"ad_status": "Running 🚀"}}, upsert=True)
-    
     if user_id in active_workers:
         active_workers[user_id].cancel()
 
     task = asyncio.create_task(ad_worker(client, user_id))
     active_workers[user_id] = task
-    
-    await callback.answer("🚀 Advertisement started! Check your chat for live logs.")
+    await callback.answer("🚀 Started!")
     await show_dashboard(callback, edit=True)
 
 @bot.on_callback_query(filters.regex("stop_ads"))
 async def stop_ads_cb(client, callback: CallbackQuery):
     user_id = callback.from_user.id
     await settings_col.update_one({"user_id": user_id}, {"$set": {"ad_status": "Stopped ⛔"}}, upsert=True)
-    
     if user_id in active_workers:
         active_workers[user_id].cancel()
         del active_workers[user_id]
-        
-    await callback.answer("⛔ Advertisement stopped!")
+    await callback.answer("⛔ Stopped!")
     await show_dashboard(callback, edit=True)
 
 @bot.on_callback_query(filters.regex("about_bot"))
 async def about_cb(client, callback: CallbackQuery):
-    await callback.message.edit_text("ℹ️ **Ads Manager Bot**\nAdvanced Telegram userbot ads automation manager supporting multiple accounts, scheduled broadcasting, private/public force subscription, and automated responses.\n\nPowered by Pyrogram.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_home")]]))
+    await callback.message.edit_text("ℹ️ **Ads Manager Bot**\nPowered by Pyrogram.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_home")]]))
 
 @bot.on_callback_query(filters.regex("back_home"))
 async def back_home_cb(client, callback: CallbackQuery):
     await show_dashboard(callback, edit=True)
 
-# --- Admin Panel (Only Admin ID Allowed) ---
-@bot.on_message(filters.command("admin") & filters.private)
-async def admin_panel_handler(client, message_or_query):
-    if isinstance(message_or_query, CallbackQuery):
-        user_id = message_or_query.from_user.id
-        msg = message_or_query.message
-        edit = True
-    else:
-        user_id = message_or_query.from_user.id
-        msg = message_or_query
-        edit = False
-
-    if not await is_admin(user_id):
-        unauth_text = (
-            f"❌ **Unauthorized Access!**\n\n"
-            f"Aap admin nahi hain.\n"
-            f"Aapki User ID: `{user_id}`"
-        )
-        if edit:
-            await msg.edit_text(unauth_text)
-        else:
-            await msg.reply(unauth_text)
+# --- Admin Panel Buttons Callback ---
+@bot.on_callback_query(filters.regex("^open_admin_panel$"))
+async def open_admin_panel_cb(client, callback: CallbackQuery):
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("Unauthorized!", show_alert=True)
         return
-        
+
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("👑 Add Admin", callback_data="adm_add"), InlineKeyboardButton("❌ Remove Admin", callback_data="adm_rem")],
         [InlineKeyboardButton("📋 Admin List", callback_data="adm_list"), InlineKeyboardButton("🔒 Add Force Sub", callback_data="fsub_add")],
         [InlineKeyboardButton("🔓 Remove Force Sub", callback_data="fsub_rem"), InlineKeyboardButton("📋 Force Sub List", callback_data="fsub_list")],
         [InlineKeyboardButton("📢 Broadcast", callback_data="adm_bc"), InlineKeyboardButton("📊 Statistics", callback_data="adm_stats")],
-        [InlineKeyboardButton("⚙️ Settings", callback_data="adm_set")]
+        [InlineKeyboardButton("🔙 Back to Dashboard", callback_data="back_home")]
     ])
-    
-    text = "👑 **Admin Control Panel**"
-    if edit:
-        await msg.edit_text(text, reply_markup=keyboard)
-    else:
-        await msg.reply(text, reply_markup=keyboard)
+    await callback.message.edit_text("👑 **Admin Control Panel**", reply_markup=keyboard)
 
 @bot.on_callback_query(filters.regex(r"^(adm_|fsub_|back_admin)"))
 async def admin_buttons_cb(client, callback: CallbackQuery):
@@ -633,19 +550,19 @@ async def admin_buttons_cb(client, callback: CallbackQuery):
         text = f"📋 **Admin List:**\nPrimary Admin: `{PRIMARY_ADMIN_ID}`\n"
         for a in admins:
             text += f"- `{a['user_id']}`\n"
-        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_admin")]]))
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="open_admin_panel")]]))
     elif data == "fsub_add":
         admin_states[user_id] = "wait_add_fsub"
-        await callback.message.edit_text("Send the channel username or private channel ID (e.g., `@channel` or `-100xxxxxxxxxx`):")
+        await callback.message.edit_text("Send channel username or private ID (`@channel` or `-100xxx`):")
     elif data == "fsub_rem":
         admin_states[user_id] = "wait_rem_fsub"
-        await callback.message.edit_text("Send the channel username or ID to remove from Force Sub:")
+        await callback.message.edit_text("Send channel username or ID to remove:")
     elif data == "fsub_list":
         subs = await forcesub_col.find().to_list(length=100)
         text = "📋 **Force Sub Channels:**\n"
         for s in subs:
             text += f"- `{s['channel']}`\n"
-        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_admin")]]))
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="open_admin_panel")]]))
     elif data == "adm_bc":
         admin_states[user_id] = "wait_broadcast"
         await callback.message.edit_text("Send the broadcast message:")
@@ -653,11 +570,7 @@ async def admin_buttons_cb(client, callback: CallbackQuery):
         total_users = await users_col.count_documents({})
         total_accs = await accounts_col.count_documents({})
         text = f"📊 **Bot Statistics:**\n\nTotal Users: `{total_users}`\nHosted Accounts: `{total_accs}`"
-        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_admin")]]))
-    elif data == "adm_set":
-        await callback.message.edit_text("⚙️ **Global Settings**\nAll system parameters are operating normally.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_admin")]]))
-    elif data == "back_admin":
-        await admin_panel_handler(client, callback)
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="open_admin_panel")]]))
 
 # --- Main Entry Point ---
 if __name__ == "__main__":
