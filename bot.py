@@ -291,7 +291,7 @@ async def add_account_cb(client, callback: CallbackQuery):
     temp_sessions[user_id] = {"step": "waiting_phone"}
     await callback.message.reply("Send your phone number with country code.\nExample: `+919876543210`")
 
-# --- Set Welcome Setup ---
+# --- 👋 Set Welcome Setup ---
 @bot.on_callback_query(filters.regex("set_welcome"))
 async def set_welcome_cb(client, callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -642,7 +642,7 @@ async def ad_worker(bot_client, user_id):
                 await asyncio.sleep(20)
                 continue
 
-            # 🌟 REAL-TIME LOG UPDATING AFTER EACH GROUP AD SENT
+            # REAL-TIME LOG UPDATING AFTER EACH GROUP AD SENT
             for chat_id, chat_title in chat_ids_to_target:
                 try:
                     await userbot.send_message(chat_id, ad["text"])
@@ -668,7 +668,7 @@ async def ad_worker(bot_client, user_id):
                     f"• Successfully Sent: `{sent_count}` ✅\n"
                     f"• Failed / Restricted: `{failed_count}` ❌\n\n"
                     f"📋 **Live Send Logs:**\n"
-                    f"{fetched_groups_info[-2000:]}"  # Shows the latest real-time logs
+                    f"{fetched_groups_info[-2000:]}"
                 )
                 if log_msg:
                     try:
@@ -729,9 +729,30 @@ async def stop_ads_cb(client, callback: CallbackQuery):
     await callback.answer("⛔ Stopped!")
     await show_dashboard(callback, edit=True)
 
+# --- About Bot Handler ---
 @bot.on_callback_query(filters.regex("about_bot"))
 async def about_cb(client, callback: CallbackQuery):
-    await callback.message.edit_caption(caption="ℹ️ **Ads Manager Bot**\nPowered by Pyrogram.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_home")]]))
+    about_text = (
+        "🤖 **ABOUT ADS MANAGER BOT**\n\n"
+        "Welcome to the ultimate **Telegram Ads & Broadcast Manager Bot**! "
+        "Is bot ki madad se aap apne Multiple Telegram Accounts ko manage kar sakte hain "
+        "aur automated broadcasting & auto-reply features ka use kar sakte hain.\n\n"
+        "✨ **Key Features:**\n"
+        "• 📱 Multi-Account Hosting Support\n"
+        "• 📢 Automated Group Ads Broadcasting\n"
+        "• ⏱ Customizable Broadcast Intervals & Delays\n"
+        "• 👋 Custom Welcome Message & Buttons\n"
+        "• 🤖 Smart Auto Reply System\n"
+        "• 📊 Real-time Live Logs & Reports\n\n"
+        "👨‍💻 **Developer:** @PANDA_1125\n"
+        "💬 **Support & Inquiries:** Contact Developer for custom bot setups or help!\n\n"
+        "─── **Powered by @PANDA_1125** ───"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("👨‍💻 Developer", url="https://t.me/PANDA_1125")],
+        [InlineKeyboardButton("🔙 Back", callback_data="back_home")]
+    ])
+    await callback.message.edit_caption(caption=about_text, reply_markup=keyboard)
 
 @bot.on_callback_query(filters.regex("back_home"))
 async def back_home_cb(client, callback: CallbackQuery):
